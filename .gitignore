@@ -1,0 +1,7 @@
+.venv-r2s100k/
+.deps/
+checkpoints/r2s100k/
+r2s100k/runs/
+r2s100k/audit_report.json
+r2s100k/manifests/
+__pycache__/

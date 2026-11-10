@@ -25,6 +25,7 @@ class CATSegPredictor(nn.Module):
         train_class_json: str,
         test_class_json: str,
         clip_pretrained: str,
+        device: str,
         prompt_ensemble_type: str,
         text_guidance_dim: int,
         text_guidance_proj_dim: int,
@@ -48,6 +49,7 @@ class CATSegPredictor(nn.Module):
             
         """
         super().__init__()
+        self.device = torch.device(device)
         
         import json
         # use class_texts in train_forward, and test_class_texts in test_forward
@@ -58,7 +60,7 @@ class CATSegPredictor(nn.Module):
         assert self.class_texts != None
         if self.test_class_texts == None:
             self.test_class_texts = self.class_texts
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = str(self.device)
   
         self.tokenizer = None
         if clip_pretrained == "ViT-G" or clip_pretrained == "ViT-H":
@@ -74,6 +76,11 @@ class CATSegPredictor(nn.Module):
         else:
             # for OpenAI models
             clip_model, clip_preprocess = clip.load(clip_pretrained, device=device, jit=False, prompt_depth=prompt_depth, prompt_length=prompt_length)
+
+        # The upstream CLIP loader converts transformer weights to FP16. CPU
+        # inference and initial text embedding require FP32 linear operations.
+        if self.device.type == "cpu":
+            clip_model = clip_model.float()
     
         self.prompt_ensemble_type = prompt_ensemble_type        
 
@@ -123,6 +130,7 @@ class CATSegPredictor(nn.Module):
         ret["train_class_json"] = cfg.MODEL.SEM_SEG_HEAD.TRAIN_CLASS_JSON
         ret["test_class_json"] = cfg.MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON
         ret["clip_pretrained"] = cfg.MODEL.SEM_SEG_HEAD.CLIP_PRETRAINED
+        ret["device"] = cfg.MODEL.DEVICE
         ret["prompt_ensemble_type"] = cfg.MODEL.PROMPT_ENSEMBLE_TYPE
 
         # Aggregator parameters:
@@ -171,9 +179,9 @@ class CATSegPredictor(nn.Module):
             else:
                 texts = [template.format(classname) for template in templates]  # format with class
             if self.tokenizer is not None:
-                texts = self.tokenizer(texts).cuda()
+                texts = self.tokenizer(texts).to(self.device)
             else: 
-                texts = clip.tokenize(texts).cuda()
+                texts = clip.tokenize(texts).to(self.device)
             class_embeddings = clip_model.encode_text(texts)
             class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             if len(templates) != class_embeddings.shape[0]:
@@ -181,7 +189,7 @@ class CATSegPredictor(nn.Module):
                 class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
             class_embedding = class_embeddings
             zeroshot_weights.append(class_embedding)
-        zeroshot_weights = torch.stack(zeroshot_weights, dim=1).cuda()
+        zeroshot_weights = torch.stack(zeroshot_weights, dim=1).to(self.device)
         return zeroshot_weights
     
     def get_text_embeds(self, classnames, templates, clip_model, prompt=None):
@@ -197,9 +205,9 @@ class CATSegPredictor(nn.Module):
                 else:
                     texts = [template.format(classname) for template in templates]  # format with class
                 if self.tokenizer is not None:
-                    texts = self.tokenizer(texts).cuda()
+                    texts = self.tokenizer(texts).to(self.device)
                 else: 
-                    texts = clip.tokenize(texts).cuda()
+                    texts = clip.tokenize(texts).to(self.device)
                 tokens.append(texts)
             tokens = torch.stack(tokens, dim=0).squeeze(1)
             if prompt is None:
