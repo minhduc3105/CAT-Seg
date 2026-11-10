@@ -86,7 +86,9 @@ def prepare(a):
  for x,y in [('train','val'),('train','test'),('val','test')]:
   dup=sorted(names_by_split[x]&names_by_split[y]); report['cross_split_duplicate_names'][f'{x}_{y}']=len(dup)
  if report['cross_split_duplicate_names'].get('train_val',0): report['warnings'].append('Train and val share image basenames; inspect hashes before interpreting validation results.')
- pilot=list_images(root/'val')
+ val_dir=root/'val'
+ pilot=list_images(val_dir) if val_dir.is_dir() else []
+ if not pilot: print('[prepare] no val images found; creating an empty val pilot manifest.',flush=True)
  random.Random(42).shuffle(pilot); pilot=sorted(pilot[:min(20,len(pilot))])
  atomic_json(out/'manifests'/'val_pilot_images.json',[{'image_id':p.name,'image_path':str(p.resolve())} for p in pilot])
  atomic_json(out/'audit_report.json',report); atomic_json(HERE/'vocabulary.json',VOCAB)
