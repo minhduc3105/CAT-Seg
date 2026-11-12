@@ -25,9 +25,16 @@ if [[ ! -x "$cuda_dir/bin/nvcc" ]]; then
   }
   mkdir -p .deps
   installer=.deps/cuda_11.8.0_520.61.05_linux.run
-  echo '[setup] Downloading CUDA Toolkit 11.8 (toolkit only)...'
-  curl --fail --location --retry 3 --continue-at - --output "$installer" \
-    'https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run'
+  expected_md5=d6cf26349e5a4104b8683e26b717fa22
+  if [[ ! -f "$installer" || $(stat -c %s "$installer") -ne 4336730777 ]]; then
+    echo '[setup] Downloading CUDA Toolkit 11.8 (toolkit only)...'
+    curl --fail --location --retry 3 --continue-at - --output "$installer" \
+      'https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run'
+  fi
+  printf '%s  %s\n' "$expected_md5" "$installer" | md5sum --check --status || {
+    echo '[setup] CUDA installer checksum does not match NVIDIA; remove the file and rerun setup.' >&2
+    exit 1
+  }
   echo '[setup] Installing CUDA Toolkit 11.8 (without a driver)...'
   sh "$installer" --silent --toolkit --toolkitpath="$cuda_dir" --override
 fi
@@ -36,6 +43,9 @@ if [[ ! -x "$cuda_dir/bin/nvcc" ]] || ! "$cuda_dir/bin/nvcc" --version | grep -q
   echo "[setup] Expected CUDA Toolkit $expected_cuda at $cuda_dir; found an incompatible nvcc." >&2
   exit 1
 fi
+
+# The runfile needs several GB; release that space once installation is valid.
+if [[ -n ${installer:-} ]]; then rm -f "$installer"; fi
 
 export CUDA_HOME="$cuda_dir"
 export PATH="$CUDA_HOME/bin:$PATH"

@@ -22,7 +22,7 @@ The server script installs the pinned environment when needed, downloads the off
 
 ## Environment
 
-Use Python 3.10 with CUDA 11.8 PyTorch 2.1.2 / torchvision 0.16.2, matching Detectron2 v0.6. The isolated environment lives at `CAT-Seg/.venv-r2s100k`. The setup script first selects CUDA Toolkit 11.8 and GCC/G++ 11, installing them on a root-owned x86_64 Ubuntu server if missing. It then installs the pinned Python dependencies, checks that PyTorch uses CUDA 11.8, builds Detectron2 with the matching toolkit and compiler, and verifies CUDA/package imports. The toolkit installer is downloaded to `.deps/` for resumable setup and installs only the toolkit, not the NVIDIA driver. Run it once on a new server:
+Use Python 3.10 with CUDA 11.8 PyTorch 2.1.2 / torchvision 0.16.2, matching Detectron2 v0.6. The isolated environment lives at `CAT-Seg/.venv-r2s100k`. The setup script first selects CUDA Toolkit 11.8 and GCC/G++ 11, installing them on a root-owned x86_64 Ubuntu server if missing. It then installs the pinned Python dependencies, checks that PyTorch uses CUDA 11.8, builds Detectron2 with the matching toolkit and compiler, and verifies CUDA/package imports. The toolkit installer is downloaded to `.deps/` for resumable setup, installs only the toolkit, not the NVIDIA driver, and is removed after installation to free disk space. Run it once on a new server:
 
 ```bash
 cd CAT-Seg
