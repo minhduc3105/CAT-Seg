@@ -1,5 +1,31 @@
 """R2S100K class IDs and prompt vocabulary."""
+# Source: R2S100K Table I and Sec. III-C1; upstream utils/helpers.py
+# defines bg as ID 0 / RGB (0, 0, 0). The paper does not provide a
+# separate exhaustive background definition. The complement of its 14
+# target classes and the visual examples below are our prompt interpretation.
+BACKGROUND_DESCRIPTION = (
+    "Scene outside the annotated road-region surface: sky, hillsides, trees, "
+    "buildings, walls and other surroundings beyond the road. Objects that "
+    "are not one of the fourteen road-region categories may also be background "
+    "even when they appear on the roadway. Roadside vegetation annotated as "
+    "Vegetation Misc remains class 7. ID 0 is evaluated, not ignored."
+)
+# SED's VOC-background evaluation predicts concrete scene categories and maps
+# the extra classes to background after argmax. Keep these concepts separate
+# instead of averaging unrelated objects into one text embedding.
+BACKGROUND_PROMPT_VARIANTS = (
+    "sky",
+    "tree",
+    "mountain hillside",
+    "building",
+    "wall beside a road",
+    "vehicle",
+    "person",
+    "roadside barrier",
+)
+
 CLASSES = {
+    0: ("Background", BACKGROUND_DESCRIPTION, (0, 0, 0)),
     1: (
         "Wet Surface",
         "Slightly watered road surface; it can be damp due to snow or cold weather.",
@@ -56,13 +82,14 @@ CLASSES = {
     ),
 }
 
-BACKGROUND_RGB = (0, 0, 0)
+BACKGROUND_RGB = CLASSES[0][2]
 
 NUM_CLASSES = 15
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 SHORT_PROMPTS = {
+    0: "scene background outside road-region categories",
     1: "wet road surface",
     2: "asphalt road",
     3: "muddy road",
@@ -95,3 +122,21 @@ DESCRIPTION_PROMPTS = {
     13: "unpaved gravel surface with loose rock fragments",
     14: "concrete road material with coarse and fine aggregate",
 }
+
+
+def model_vocabulary():
+    """Return 14 road concepts followed by visual background concepts."""
+    expected = set(range(NUM_CLASSES))
+    if set(CLASSES) != expected or set(DESCRIPTION_PROMPTS) != expected - {0}:
+        raise ValueError("Taxonomy must define IDs 0–14 and prompts for IDs 1–14")
+    if len({CLASSES[i][2] for i in range(NUM_CLASSES)}) != NUM_CLASSES:
+        raise ValueError("Taxonomy colors must be unique")
+    prompts = [DESCRIPTION_PROMPTS[i] for i in range(1, NUM_CLASSES)] + list(BACKGROUND_PROMPT_VARIANTS)
+    if any(not isinstance(prompt, str) or not prompt.strip() for prompt in prompts):
+        raise ValueError("Every class must have a nonempty SED prompt")
+    return prompts
+
+
+def model_to_dataset_ids():
+    """Map SED output channels to the 15 R2S100K mask IDs."""
+    return list(range(1, NUM_CLASSES)) + [0] * len(BACKGROUND_PROMPT_VARIANTS)

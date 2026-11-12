@@ -5,14 +5,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 try:
- from .taxonomy import CLASSES, BACKGROUND_RGB, NUM_CLASSES, IMAGE_SUFFIXES, DESCRIPTION_PROMPTS
+ from .taxonomy import CLASSES, BACKGROUND_RGB, NUM_CLASSES, IMAGE_SUFFIXES, model_vocabulary, model_to_dataset_ids
 except ImportError:
- from taxonomy import CLASSES, BACKGROUND_RGB, NUM_CLASSES, IMAGE_SUFFIXES, DESCRIPTION_PROMPTS
+ from taxonomy import CLASSES, BACKGROUND_RGB, NUM_CLASSES, IMAGE_SUFFIXES, model_vocabulary, model_to_dataset_ids
 
 HERE=Path(__file__).resolve().parent
 REPO=HERE.parent
 DEFAULT_ROOT=Path('/run/media/minhduc/D/Study/r2s100k')
-VOCAB=["background outside the labeled road regions"]+[DESCRIPTION_PROMPTS[i] for i in range(1,15)]
 PALETTE=np.array([BACKGROUND_RGB]+[CLASSES[i][2] for i in range(1,15)],dtype=np.uint8)
 NAMES=['Background']+[CLASSES[i][0] for i in range(1,15)]
 
@@ -91,7 +90,7 @@ def prepare(a):
  if not pilot: print('[prepare] no val images found; creating an empty val pilot manifest.',flush=True)
  random.Random(42).shuffle(pilot); pilot=sorted(pilot[:min(20,len(pilot))])
  atomic_json(out/'manifests'/'val_pilot_images.json',[{'image_id':p.name,'image_path':str(p.resolve())} for p in pilot])
- atomic_json(out/'audit_report.json',report); atomic_json(HERE/'vocabulary.json',VOCAB)
+ atomic_json(out/'audit_report.json',report); atomic_json(HERE/'vocabulary.json',model_vocabulary())
  print('[prepare] audit complete; summary:',flush=True); print(json.dumps(report,indent=2),flush=True)
 def overlay(image,ids,path):
  pal=PALETTE.copy(); pal[0]=[0,0,0]
@@ -108,9 +107,16 @@ def infer(a):
  from detectron2.projects.deeplab import add_deeplab_config
  sys.path.insert(0,str(REPO)); import cat_seg
  cfg=get_cfg();add_deeplab_config(cfg);cat_seg.add_cat_seg_config(cfg);cfg.merge_from_file(str(REPO/'configs/vitb_384.yaml'))
- vocabfile=Path(a.vocabulary).resolve();vocab=json.loads(vocabfile.read_text())
- if len(vocab)!=15 or not all(isinstance(x,str) for x in vocab): raise ValueError('Vocabulary must contain 15 ordered strings (BG then IDs 1..14).')
- cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES=15;cfg.MODEL.SEM_SEG_HEAD.TRAIN_CLASS_JSON=str(vocabfile);cfg.MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON=str(vocabfile);cfg.MODEL.WEIGHTS=str(a.checkpoint.resolve());cfg.MODEL.DEVICE=a.device;cfg.TEST.SLIDING_WINDOW=False;cfg.freeze()
+ out=Path(a.output); mapping=np.asarray(model_to_dataset_ids(),dtype=np.uint8)
+ if a.vocabulary is None:
+  vocabfile=(out/'model_vocabulary.json').resolve()
+  atomic_json(vocabfile,model_vocabulary())
+ else:
+  vocabfile=Path(a.vocabulary).resolve()
+ vocab=json.loads(vocabfile.read_text())
+ if len(vocab)!=len(mapping) or not all(isinstance(x,str) and x.strip() for x in vocab):
+  raise ValueError(f'Vocabulary must contain {len(mapping)} ordered nonempty strings matching taxonomy channels.')
+ cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES=len(vocab);cfg.MODEL.SEM_SEG_HEAD.TRAIN_CLASS_JSON=str(vocabfile);cfg.MODEL.SEM_SEG_HEAD.TEST_CLASS_JSON=str(vocabfile);cfg.MODEL.WEIGHTS=str(a.checkpoint.resolve());cfg.MODEL.DEVICE=a.device;cfg.TEST.SLIDING_WINDOW=False;cfg.freeze()
  print(f'[infer] building model on {a.device} and loading checkpoint {a.checkpoint}',flush=True)
  model=build_model(cfg); check=DetectionCheckpointer(model).load(str(a.checkpoint.resolve()))
  # Fail closed if a checkpoint misses trained CAT-Seg predictor/aggregation weights.
@@ -121,20 +127,26 @@ def infer(a):
  print('[infer] model ready; reading image manifest...',flush=True)
  entries=load_manifest(a.manifest); entries=entries[:a.max_images] if a.max_images else entries
  print(f'[infer] processing {len(entries)} images; output: {a.output}',flush=True)
- out=Path(a.output); pred=out/'predictions';ov=out/'overlays'; pred.mkdir(parents=True,exist_ok=True);ov.mkdir(parents=True,exist_ok=True)
+ pred=out/'predictions';ov=out/'overlays';colored=out/'colored_masks'
+ for directory in (pred,ov,colored): directory.mkdir(parents=True,exist_ok=True)
  source_paths={'pipeline':Path(__file__).resolve(),'taxonomy':HERE/'taxonomy.py','predictor':REPO/'cat_seg/modeling/transformer/cat_seg_predictor.py','config':REPO/'configs/vitb_384.yaml'}
  source_hashes={name:digest(path) for name,path in source_paths.items()}
  fingerprint=hashlib.sha256((digest(a.checkpoint)+digest(vocabfile)+digest(Path(a.manifest))+json.dumps(source_hashes,sort_keys=True)).encode()).hexdigest()
  try: revision=subprocess.check_output(['git','-C',str(REPO),'rev-parse','HEAD'],text=True).strip()
  except Exception: revision='unknown'
- atomic_json(out/'run_metadata.json',{'checkpoint':str(a.checkpoint.resolve()),'checkpoint_sha256':digest(a.checkpoint),'vocabulary_sha256':digest(vocabfile),'manifest_sha256':digest(Path(a.manifest)),'fingerprint':fingerprint,'device':a.device,'config':str(REPO/'configs/vitb_384.yaml'),'source_sha256':source_hashes,'num_classes':15,'amp':False,'python':sys.version,'torch':torch.__version__,'cuda':torch.version.cuda,'cat_seg_git_revision':revision})
+ atomic_json(out/'run_metadata.json',{'checkpoint':str(a.checkpoint.resolve()),'checkpoint_sha256':digest(a.checkpoint),'vocabulary_sha256':digest(vocabfile),'manifest_sha256':digest(Path(a.manifest)),'fingerprint':fingerprint,'device':a.device,'config':str(REPO/'configs/vitb_384.yaml'),'source_sha256':source_hashes,'num_classes':NUM_CLASSES,'model_channels':len(vocab),'model_to_dataset_ids':mapping.tolist(),'amp':False,'python':sys.version,'torch':torch.__version__,'cuda':torch.version.cuda,'cat_seg_git_revision':revision})
  progress=Progress('infer',len(entries))
  for ix,r in enumerate(entries):
   im=Path(r['image_path']); dst=pred/f'{r["image_id"]}.png'; meta=pred/f'{r["image_id"]}.json'
+  color_dst=colored/f'{r["image_id"]}.png'; overlay_dst=ov/f'{im.name}.jpg'
   if dst.is_file() and meta.is_file():
    try:
     old=json.loads(meta.read_text())
-    if old.get('fingerprint')==fingerprint and np.asarray(Image.open(dst)).shape==np.asarray(Image.open(im)).shape[::-1]:
+    if old.get('fingerprint')==fingerprint and Image.open(dst).size==Image.open(im).size:
+     if not color_dst.is_file():
+      Image.fromarray(PALETTE[np.asarray(Image.open(dst).convert('L'))],mode='RGB').save(color_dst)
+     if not overlay_dst.is_file():
+      with Image.open(im) as pil: overlay(pil,np.asarray(Image.open(dst).convert('L')),overlay_dst)
      progress.update(r['image_id']); continue
    except Exception: pass
    dst.unlink(missing_ok=True);meta.unlink(missing_ok=True)
@@ -143,16 +155,17 @@ def infer(a):
   t=time.perf_counter()
   with torch.inference_mode(): result=model([{'image':tensor,'height':h,'width':w}])[0]['sem_seg']
   scores=result.detach().float().cpu().numpy()
-  if scores.shape[0]!=15 or not np.isfinite(scores).all(): raise RuntimeError(f'Invalid score map for {im}: {scores.shape}')
+  if scores.shape[0]!=len(mapping) or not np.isfinite(scores).all(): raise RuntimeError(f'Invalid score map for {im}: {scores.shape}')
   scores=cv2.resize(scores.transpose(1,2,0),(w,h),interpolation=cv2.INTER_LINEAR).transpose(2,0,1)
-  ids=scores.argmax(0).astype(np.uint8)
+  ids=mapping[scores.argmax(0)]
   Image.fromarray(ids,mode='L').save(dst)
-  with Image.open(im) as pil: overlay(pil,ids,ov/f'{im.name}.jpg')
+  Image.fromarray(PALETTE[ids],mode='RGB').save(color_dst)
+  with Image.open(im) as pil: overlay(pil,ids,overlay_dst)
   if a.save_max_score: np.save(pred/f'{im.name}.max_score.npy',scores.max(0).astype(np.float16))
   atomic_json(meta,{'fingerprint':fingerprint,'image_id':im.name,'height':h,'width':w,'elapsed_seconds':time.perf_counter()-t,'status':'ok'})
   progress.update(im.name)
  progress.finish()
- print(f'[infer] complete; predictions: {pred}; overlays: {ov}',flush=True)
+ print(f'[infer] complete; predictions: {pred}; colored masks: {colored}; overlays: {ov}',flush=True)
 def erode_inner(mask):
  # 3x3 erosion; exterior image border is replicated to avoid artificial frame edges.
  import cv2
@@ -205,7 +218,7 @@ def evaluate(a):
 def main():
  p=argparse.ArgumentParser();sp=p.add_subparsers(dest='cmd',required=True)
  q=sp.add_parser('prepare');q.add_argument('--dataset-root',type=Path,default=DEFAULT_ROOT);q.add_argument('--output',type=Path,default=HERE/'runs/r2s100k');q.set_defaults(fn=prepare)
- q=sp.add_parser('infer');q.add_argument('--manifest',type=Path,required=True);q.add_argument('--checkpoint',type=Path,required=True);q.add_argument('--vocabulary',type=Path,default=HERE/'vocabulary.json');q.add_argument('--output',type=Path,required=True);q.add_argument('--device',default='cuda');q.add_argument('--max-images',type=int,default=0);q.add_argument('--save-max-score',action='store_true');q.set_defaults(fn=infer)
+ q=sp.add_parser('infer');q.add_argument('--manifest',type=Path,required=True);q.add_argument('--checkpoint',type=Path,required=True);q.add_argument('--vocabulary',type=Path,default=None);q.add_argument('--output',type=Path,required=True);q.add_argument('--device',default='cuda');q.add_argument('--max-images',type=int,default=0);q.add_argument('--save-max-score',action='store_true');q.set_defaults(fn=infer)
  q=sp.add_parser('evaluate');q.add_argument('--image-manifest',type=Path,required=True);q.add_argument('--label-manifest',type=Path,required=True);q.add_argument('--predictions',type=Path,required=True);q.add_argument('--output',type=Path,required=True);q.set_defaults(fn=evaluate)
  a=p.parse_args();a.fn(a)
 if __name__=='__main__':main()
